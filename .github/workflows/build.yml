@@ -1,0 +1,52 @@
+name: Fortran Build
+
+on: [push, pull_request]
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Setup environment
+      run: |
+        if [ "${{ matrix.os }}" = "ubuntu-latest" ]; then
+          sudo apt-get update
+          sudo apt-get install -y gfortran
+        elif [ "${{ matrix.os }}" = "windows-latest" ]; then
+          choco install mingw
+        elif [ "${{ matrix.os }}" = "macos-latest" ]; then
+          brew install gcc
+        fi
+    
+    - name: Compile
+      shell: bash
+      run: |
+        # Простая компиляция всех .f90 файлов
+        gfortran -c *.f90 2>&1 | tee compile.log
+        gfortran *.o -o program
+        
+        # Проверка существования исполняемого файла
+        if [ "${{ matrix.os }}" = "windows-latest" ]; then
+          if [ -f "program.exe" ]; then
+            echo "Build successful on Windows"
+          fi
+        else
+          if [ -f "program" ]; then
+            echo "Build successful on ${{ matrix.os }}"
+          fi
+        fi
+    
+    - name: Archive build artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ matrix.os }}-build
+        path: |
+          program
+          program.exe
+          *.mod
+          *.o
