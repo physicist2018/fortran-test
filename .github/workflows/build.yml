@@ -100,5 +100,5 @@ jobs:
         with:
           tag: ${{ github.ref_name }}
           name: Release ${{ github.ref_name }}
-          artifacts: artifacts/*
+          artifacts: artifacts/**/*
           generate_release_notes: true
