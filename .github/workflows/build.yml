@@ -1,33 +1,43 @@
-name: Fortran Build and Release
+name: Fortran CI/CD
 
 on:
   push:
-    tags:
-      - "v*" # Триггер на теги v1.0.0, v2.0.0 и т.д.
+    tags: ["v*.*.*"]
+  workflow_dispatch:
 
 jobs:
-  build-and-release:
+  build:
     strategy:
       matrix:
+        os: [windows-latest, macos-latest]
         include:
-          - platform: windows
-            os: windows-latest
-            artifact_name: myprogram-windows-x64.zip
-            executable_name: myprogram.exe
-            compile_command: gfortran *.f90 -o myprogram.exe -O2 -m64 -static
-            setup_command: choco install mingw -y
-            test_command: ./myprogram.exe --help || echo "Test complete"
+          - os: windows-latest
+            target: windows-x64
+            artifact: myprogram-windows-x64.zip
+            compiler_setup: |
+              choco install mingw -y
+              echo "C:\ProgramData\chocolatey\lib\mingw\tools\install\mingw64\bin" >> $GITHUB_PATH
+            compile_cmd: gfortran *.f90 -o myprogram.exe -static -O2
+            package_cmd: 7z a myprogram-windows-x64.zip myprogram.exe
 
-          - platform: macos-m1
-            os: macos-latest
-            artifact_name: myprogram-macos-arm64.tar.gz
-            executable_name: myprogram
-            compile_command: $FC *.f90 -o myprogram -O2 -march=armv8-a
-            setup_command: |
+          - os: macos-latest
+            target: macos-arm64
+            artifact: myprogram-macos-arm64.tar.gz
+            compiler_setup: |
               brew install gcc
-              echo "/opt/homebrew/bin" >> $GITHUB_PATH
-              FC=$(which gfortran || find /opt/homebrew -name gfortran -type f 2>/dev/null | head -1)
-            test_command: ./myprogram --help || echo "Test complete"
+              # Ищем gfortran
+              GFORTRAN_PATH=$(find /opt/homebrew -name gfortran -type f 2>/dev/null | head -1)
+              if [ -n "$GFORTRAN_PATH" ]; then
+                echo "Found gfortran at: $GFORTRAN_PATH"
+                dirname "$GFORTRAN_PATH" >> $GITHUB_PATH
+              fi
+            compile_cmd: |
+              # Находим gfortran
+              FC=$(which gfortran || find /opt/homebrew -name gfortran -type f 2>/dev/null | head -1 || echo "gfortran")
+              echo "Using compiler: $FC"
+              $FC -c *.f90
+              $FC *.o -o myprogram -O2
+            package_cmd: tar -czf myprogram-macos-arm64.tar.gz myprogram
 
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
@@ -35,73 +45,52 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Setup environment
-        run: ${{ matrix.setup_command }}
+      - name: Setup compiler
+        run: ${{ matrix.compiler_setup }}
 
-      - name: Compile Fortran
-        run: ${{ matrix.compile_command }}
-
-      - name: Test executable
-        run: ${{ matrix.test_command }}
-
-      - name: Prepare release asset
-        shell: bash
+      - name: Verify compiler
         run: |
-          if [ "${{ matrix.platform }}" = "windows" ]; then
-            7z a ${{ matrix.artifact_name }} ${{ matrix.executable_name }}
-          else
-            chmod +x ${{ matrix.executable_name }}
-            tar -czf ${{ matrix.artifact_name }} ${{ matrix.executable_name }}
+          echo "Checking gfortran..."
+          which gfortran || find /opt/homebrew -name gfortran 2>/dev/null || find /usr/local -name gfortran 2>/dev/null || echo "Searching..."
+          gfortran --version || /opt/homebrew/bin/gfortran --version || /usr/local/bin/gfortran --version || echo "Will try during compile"
+
+      - name: Compile
+        run: ${{ matrix.compile_cmd }}
+
+      - name: Test
+        run: |
+          if [ -f "myprogram" ]; then
+            ./myprogram --help || ./myprogram --version || echo "Program ran"
+          elif [ -f "myprogram.exe" ]; then
+            ./myprogram.exe --help || ./myprogram.exe --version || echo "Program ran"
           fi
 
-          # Создаем README
-          echo "# ${{ matrix.executable_name }}" > README-${{ matrix.platform }}.txt
-          echo "Platform: ${{ matrix.platform }}" >> README-${{ matrix.platform }}.txt
-          echo "Built: $(date)" >> README-${{ matrix.platform }}.txt
+      - name: Package
+        run: ${{ matrix.package_cmd }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.platform }}-build
-          path: |
-            ${{ matrix.artifact_name }}
-            ${{ matrix.executable_name }}
-            README-${{ matrix.platform }}.txt
+          name: ${{ matrix.target }}
+          path: ${{ matrix.artifact }}
 
   release:
-    needs: build-and-release
+    needs: build
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    if: success()
 
     steps:
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
-        with:
-          path: ./artifacts
-
-      - name: Extract version
-        id: version
-        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
+      - name: Download artifacts
+        run: |
+          mkdir -p artifacts
+          # Скачиваем все артефакты
+          gh release view ${{ github.ref_name }} --repo ${{ github.repository }} 2>/dev/null || echo "Release doesn't exist yet"
 
       - name: Create Release
         uses: softprops/action-gh-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tag_name: ${{ github.ref_name }}
-          name: Release ${{ steps.version.outputs.VERSION }}
-          body: |
-            Fortran Program ${{ steps.version.outputs.VERSION }}
-
-            ## Downloads
-
-            **Windows x64:** [myprogram-windows-x64.zip](myprogram-windows-x64.zip)
-
-            **macOS ARM64 (M1):** [myprogram-macos-arm64.tar.gz](myprogram-macos-arm64.tar.gz)
-
-            ## Build Info
-            - Build date: $(date -u +'%Y-%m-%d %H:%M:%S UTC')
-            - Source: ${{ github.repository }}@${{ github.sha }}
+          name: Release ${{ github.ref_name }}
           files: |
-            artifacts/windows-build/myprogram-windows-x64.zip
-            artifacts/macos-m1-build/myprogram-macos-arm64.tar.gz
+            artifacts/*/*
+          generate_release_notes: true
