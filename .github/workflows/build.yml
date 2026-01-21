@@ -17,18 +17,18 @@ jobs:
         include:
           - os: windows-latest
             target: windows-x64
-            artifact: myprogram-windows-x64.zip
+            artifact: myprogram-${{ matrix.suffix }}.zip
             compiler_setup: |
               choco install mingw -y
               echo "C:\ProgramData\chocolatey\lib\mingw\tools\install\mingw64\bin" >> $GITHUB_PATH
             compile_cmd: |
               mkdir -p ./release
-              gfortran *.f90 -o ./release/myprogram.exe -static -O2
-            package_cmd: 7z a myprogram-windows-x64.zip ./release/myprogram.exe
+              gfortran *.f90 -o ./release/myprogram-${{ matrix.suffix }} -static -O2
+            package_cmd: 7z a myprogram-${{ matrix.suffix }}.zip ./release/myprogram-${{ matrix.suffix }}
 
           - os: macos-latest
             target: macos-arm64
-            artifact: myprogram-macos-arm64.tar.gz
+            artifact: myprogram-${{ matrix.suffix }}.tar.gz
             compiler_setup: |
               brew install gcc
               # Ищем gfortran
@@ -80,8 +80,8 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.target }}
-          path: ${{ matrix.artifact }}
+          name: myprogram-${{ matrix.target }}
+          path: release/myprogram-${{ matrix.artifact }}
 
   release:
     needs: build
