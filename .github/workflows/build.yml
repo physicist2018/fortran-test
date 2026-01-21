@@ -21,7 +21,9 @@ jobs:
             compiler_setup: |
               choco install mingw -y
               echo "C:\ProgramData\chocolatey\lib\mingw\tools\install\mingw64\bin" >> $GITHUB_PATH
-            compile_cmd: gfortran *.f90 -o ./release/myprogram.exe -static -O2
+            compile_cmd: |
+              mkdir -p ./release
+              gfortran *.f90 -o ./release/myprogram.exe -static -O2
             package_cmd: 7z a myprogram-windows-x64.zip ./release/myprogram.exe
 
           - os: macos-latest
@@ -37,6 +39,7 @@ jobs:
               fi
             compile_cmd: |
               # Находим gfortran
+              mkdir -p ./release
               FC=/opt/homebrew/Cellar/gcc/15.2.0/bin/gfortran
               echo "Using compiler: $FC"
               $FC -c *.f90
