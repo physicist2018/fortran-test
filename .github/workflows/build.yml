@@ -33,7 +33,7 @@ jobs:
               fi
             compile_cmd: |
               # Находим gfortran
-              FC=$(which gfortran || find /opt/homebrew -name gfortran -type f 2>/dev/null | head -1 || echo "gfortran")
+              FC=/opt/homebrew/Cellar/gcc/15.2.0/bin/gfortran
               echo "Using compiler: $FC"
               $FC -c *.f90
               $FC *.o -o myprogram -O2
