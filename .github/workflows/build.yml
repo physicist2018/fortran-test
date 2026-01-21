@@ -1,129 +1,362 @@
 name: Fortran Build
 
-on: [push, pull_request]
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+  workflow_dispatch: # Ручной запуск
+
+# Общий таймаут для всего workflow (опционально)
+# concurrency:
+#   group: ${{ github.workflow }}-${{ github.ref }}
+#   cancel-in-progress: true
 
 jobs:
   build:
+    # Таймаут для всего job - 1 час (60 минут)
+    timeout-minutes: 60
+
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false # Продолжать другие сборки если одна упала
       matrix:
         include:
-          # Linux (x64)
           - os: ubuntu-latest
             arch: x64
             label: linux-x64
             install: sudo apt-get update && sudo apt-get install -y gfortran
+            # Таймаут установки для Linux
+            install-timeout: 10
 
-          # Windows (x64)
           - os: windows-latest
             arch: x64
             label: windows-x64
-            install: choco install mingw
+            install: choco install mingw --no-progress
+            # Таймаут установки для Windows
+            install-timeout: 15
 
-          # macOS Intel (x64)
           - os: macos-13
             arch: x64
             label: macos-x64
             install: brew install gcc
+            install-timeout: 20
 
-          # macOS Apple Silicon (ARM64/M1)
-          - os: macos-latest
-            arch: ARM64
-            label: macos-arm64
-            install: |
-              brew install gcc
-              echo "Homebrew prefix: $(brew --prefix)"
-              echo "GCC installed for Apple Silicon"
-
-          # macOS Apple Silicon с указанием архитектуры
           - os: macos-14
             arch: ARM64
             label: macos-m1
             install: |
-              # Установка GCC для ARM64
               brew install gcc
-              # Добавление в PATH
               echo "$(brew --prefix)/opt/gcc/bin" >> $GITHUB_PATH
+            install-timeout: 25 # M1 может требовать больше времени
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1 # Оптимизация: загружаем только последний коммит
+
+      - name: Cache dependencies
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.cache/apt
+            ~/cache/choco
+            ~/Library/Caches/Homebrew
+          key: ${{ runner.os }}-deps-${{ hashFiles('Makefile', 'CMakeLists.txt', '*.f90') }}
+          restore-keys: |
+            ${{ runner.os }}-deps-
 
       - name: Show system info
         shell: bash
         run: |
-          echo "OS: ${{ matrix.os }}"
-          echo "Architecture: ${{ matrix.arch }}"
-          echo "Runner label: ${{ matrix.label }}"
-          uname -a
-          arch
+          echo "=== System Information ==="
+          echo "Runner: ${{ runner.os }} ${{ runner.arch }}"
+          echo "Matrix: OS=${{ matrix.os }}, Arch=${{ matrix.arch }}"
+          echo "Label: ${{ matrix.label }}"
+          uname -srm
+          echo "CPU cores: $(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 'unknown')"
+          echo "Memory: $(free -h 2>/dev/null || vm_stat 2>/dev/null || echo 'unknown')"
 
       - name: Setup environment
-        run: ${{ matrix.install }}
+        timeout-minutes: ${{ matrix.install-timeout }}
+        shell: bash
+        run: |
+          echo "Starting installation with timeout: ${{ matrix.install-timeout }} minutes"
+          echo "Install command: ${{ matrix.install }}"
+
+          # Логируем время начала
+          date
+
+          # Выполняем установку
+          ${{ matrix.install }}
+
+          # Проверяем установку
+          which gfortran || echo "WARNING: gfortran not found after installation"
+          gfortran --version || echo "WARNING: Cannot run gfortran --version"
+
+          echo "Installation completed at:"
+          date
 
       - name: Configure compiler for M1
         if: matrix.arch == 'ARM64'
+        timeout-minutes: 5
         shell: bash
         run: |
-          # Для M1 определяем правильный путь к gfortran
-          if [ -f "/opt/homebrew/bin/gfortran" ]; then
-            echo "Using ARM64 gfortran from Homebrew"
-            sudo ln -sf /opt/homebrew/bin/gfortran /usr/local/bin/gfortran || true
+          echo "Configuring compiler for Apple Silicon..."
+
+          # Проверяем архитектуру
+          ARCH=$(uname -m)
+          echo "Detected architecture: $ARCH"
+
+          if [ "$ARCH" = "arm64" ]; then
+            echo "Running on Apple Silicon (M1/M2/M3)"
+
+            # Проверяем Homebrew location
+            if [ -d "/opt/homebrew" ]; then
+              echo "Homebrew found at /opt/homebrew"
+              eval "$(/opt/homebrew/bin/brew shellenv)"
+            fi
+
+            # Ищем gfortran
+            for path in "/opt/homebrew/bin/gfortran" "/usr/local/bin/gfortran" "/usr/bin/gfortran"; do
+              if [ -f "$path" ]; then
+                echo "Found gfortran at: $path"
+                # Создаем симлинк если нужно
+                if [ "$path" != "/usr/local/bin/gfortran" ] && [ ! -f "/usr/local/bin/gfortran" ]; then
+                  echo "Creating symlink: $path -> /usr/local/bin/gfortran"
+                  sudo ln -sf "$path" /usr/local/bin/gfortran 2>/dev/null || true
+                fi
+                break
+              fi
+            done
           fi
 
-          # Проверяем доступные компиляторы
-          which gfortran || echo "gfortran not found in PATH"
-          gfortran --version || echo "Cannot run gfortran"
+          # Финальная проверка
+          echo "Final gfortran location:"
+          which gfortran || echo "gfortran not in PATH"
+          gfortran --version 2>/dev/null || echo "Cannot execute gfortran"
 
       - name: Compile Fortran code
+        timeout-minutes: 30
         shell: bash
         run: |
-          # Ищем gfortran в возможных расположениях для M1
-          if [ "${{ matrix.arch }}" = "ARM64" ]; then
-            if [ -f "/opt/homebrew/bin/gfortran" ]; then
-              FC="/opt/homebrew/bin/gfortran"
-            elif [ -f "/usr/local/bin/gfortran" ]; then
-              FC="/usr/local/bin/gfortran"
+          echo "=== Starting compilation ==="
+          date
+
+          # Определяем компилятор
+          FC="gfortran"
+          if [ "${{ matrix.arch }}" = "ARM64" ] && [ -f "/opt/homebrew/bin/gfortran" ]; then
+            FC="/opt/homebrew/bin/gfortran"
+            export PATH="/opt/homebrew/bin:$PATH"
+          fi
+
+          echo "Using compiler: $FC"
+          $FC --version || echo "WARNING: Cannot get compiler version"
+
+          # Находим Fortran файлы
+          FILES=$(find . -name "*.f90" -o -name "*.f95" -o -name "*.f03" -o -name "*.f" | head -20)
+          if [ -z "$FILES" ]; then
+            echo "ERROR: No Fortran source files found!"
+            exit 1
+          fi
+
+          echo "Found source files:"
+          echo "$FILES"
+
+          # Компиляция с прогрессом
+          echo "Compiling object files..."
+          for file in $FILES; do
+            echo "  Compiling $file"
+            $FC -c "$file" -o "${file%.*}.o" 2>&1 | tail -5
+          done
+
+          # Линковка
+          echo "Linking objects..."
+          OBJECTS=$(find . -name "*.o" | tr '\n' ' ')
+          if [ -n "$OBJECTS" ]; then
+            echo "Linking: $FC $OBJECTS -o program"
+            $FC $OBJECTS -o program 2>&1 | tee compile.log
+
+            if [ $? -eq 0 ] && [ -f "program" ]; then
+              echo "SUCCESS: Program compiled successfully"
+              ls -lh program
+
+              # Проверяем бинарник
+              if command -v file >/dev/null 2>&1; then
+                file program
+              fi
+
+              if command -v ldd >/dev/null 2>&1; then
+                ldd program 2>/dev/null || true
+              fi
             else
-              FC="gfortran"
+              echo "ERROR: Compilation failed"
+              cat compile.log
+              exit 1
             fi
           else
-            FC="gfortran"
+            echo "ERROR: No object files found"
+            exit 1
           fi
 
-          echo "Using Fortran compiler: $FC"
-          $FC --version || true
+          echo "Compilation completed at:"
+          date
 
-          # Компиляция всех .f90 файлов
-          $FC -c *.f90 2>&1 | tee compile.log
-          $FC *.o -o program
-
-          # Проверка архитектуры бинарника
-          if [ -f "program" ]; then
-            echo "Build successful"
-            if command -v file &> /dev/null; then
-              file program
-            fi
-          fi
-
-      - name: Test executable
+      - name: Run quick test
+        timeout-minutes: 2
         shell: bash
         run: |
           if [ -f "program" ]; then
-            ./program || echo "Program executed"
+            echo "Running program..."
+            timeout 30s ./program || echo "Program exited with code: $?"
           elif [ -f "program.exe" ]; then
-            ./program.exe || echo "Program executed"
+            echo "Running program.exe..."
+            timeout 30s ./program.exe || echo "Program exited with code: $?"
           else
-            echo "No executable found"
-            ls -la
+            echo "WARNING: No executable found for testing"
+            ls -la program* 2>/dev/null || true
           fi
 
       - name: Archive build artifacts
+        timeout-minutes: 5
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.label }}-build
+          name: ${{ matrix.label }}-${{ github.sha }}-${{ github.run_id }}
           path: |
             program
             program.exe
             *.mod
             *.o
-            compile.log
+            *.log
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Cleanup (опционально)
+        if: always() # Выполнять всегда, даже при ошибках
+        timeout-minutes: 2
+        run: |
+          echo "Cleaning up..."
+          rm -f *.o *.mod compile.log 2>/dev/null || true
+          echo "Cleanup completed"
+
+# name: Fortran Build
+
+# on: [push, pull_request]
+
+# jobs:
+#   build:
+#     runs-on: ${{ matrix.os }}
+#     strategy:
+#       matrix:
+#         include:
+#           # Linux (x64)
+#           - os: ubuntu-latest
+#             arch: x64
+#             label: linux-x64
+#             install: sudo apt-get update && sudo apt-get install -y gfortran
+
+#           # Windows (x64)
+#           - os: windows-latest
+#             arch: x64
+#             label: windows-x64
+#             install: choco install mingw
+
+#           # macOS Intel (x64)
+#           - os: macos-13
+#             arch: x64
+#             label: macos-x64
+#             install: brew install gcc
+
+#           # macOS Apple Silicon с указанием архитектуры
+#           - os: macos-14
+#             arch: ARM64
+#             label: macos-m1
+#             install: |
+#               # Установка GCC для ARM64
+#               brew install gcc
+#               # Добавление в PATH
+#               echo "$(brew --prefix)/opt/gcc/bin" >> $GITHUB_PATH
+
+#     steps:
+#       - uses: actions/checkout@v4
+
+#       - name: Show system info
+#         shell: bash
+#         run: |
+#           echo "OS: ${{ matrix.os }}"
+#           echo "Architecture: ${{ matrix.arch }}"
+#           echo "Runner label: ${{ matrix.label }}"
+#           uname -a
+#           arch
+
+#       - name: Setup environment
+#         run: ${{ matrix.install }}
+
+#       - name: Configure compiler for M1
+#         if: matrix.arch == 'ARM64'
+#         shell: bash
+#         run: |
+#           # Для M1 определяем правильный путь к gfortran
+#           if [ -f "/opt/homebrew/bin/gfortran" ]; then
+#             echo "Using ARM64 gfortran from Homebrew"
+#             sudo ln -sf /opt/homebrew/bin/gfortran /usr/local/bin/gfortran || true
+#           fi
+
+#           # Проверяем доступные компиляторы
+#           which gfortran || echo "gfortran not found in PATH"
+#           gfortran --version || echo "Cannot run gfortran"
+
+#       - name: Compile Fortran code
+#         shell: bash
+#         run: |
+#           # Ищем gfortran в возможных расположениях для M1
+#           if [ "${{ matrix.arch }}" = "ARM64" ]; then
+#             if [ -f "/opt/homebrew/bin/gfortran" ]; then
+#               FC="/opt/homebrew/bin/gfortran"
+#             elif [ -f "/usr/local/bin/gfortran" ]; then
+#               FC="/usr/local/bin/gfortran"
+#             else
+#               FC="gfortran"
+#             fi
+#           else
+#             FC="gfortran"
+#           fi
+
+#           echo "Using Fortran compiler: $FC"
+#           $FC --version || true
+
+#           # Компиляция всех .f90 файлов
+#           $FC -c *.f90 2>&1 | tee compile.log
+#           $FC *.o -o program
+
+#           # Проверка архитектуры бинарника
+#           if [ -f "program" ]; then
+#             echo "Build successful"
+#             if command -v file &> /dev/null; then
+#               file program
+#             fi
+#           fi
+
+#       - name: Test executable
+#         shell: bash
+#         run: |
+#           if [ -f "program" ]; then
+#             ./program || echo "Program executed"
+#           elif [ -f "program.exe" ]; then
+#             ./program.exe || echo "Program executed"
+#           else
+#             echo "No executable found"
+#             ls -la
+#           fi
+
+#       - name: Archive build artifacts
+#         uses: actions/upload-artifact@v4
+#         with:
+#           name: ${{ matrix.label }}-build
+#           path: |
+#             program
+#             program.exe
+#             *.mod
+#             *.o
+#             compile.log
