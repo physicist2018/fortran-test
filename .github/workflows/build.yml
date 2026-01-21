@@ -21,8 +21,8 @@ jobs:
             compiler_setup: |
               choco install mingw -y
               echo "C:\ProgramData\chocolatey\lib\mingw\tools\install\mingw64\bin" >> $GITHUB_PATH
-            compile_cmd: gfortran *.f90 -o myprogram.exe -static -O2
-            package_cmd: 7z a myprogram-windows-x64.zip myprogram.exe
+            compile_cmd: gfortran *.f90 -o ./release/myprogram.exe -static -O2
+            package_cmd: 7z a myprogram-windows-x64.zip ./release/myprogram.exe
 
           - os: macos-latest
             target: macos-arm64
@@ -40,8 +40,8 @@ jobs:
               FC=/opt/homebrew/Cellar/gcc/15.2.0/bin/gfortran
               echo "Using compiler: $FC"
               $FC -c *.f90
-              $FC *.o -o myprogram -O2
-            package_cmd: tar -czf myprogram-macos-arm64.tar.gz myprogram
+              $FC *.o -o ./release/myprogram -O2
+            package_cmd: tar -czf myprogram-macos-arm64.tar.gz ./release/myprogram
 
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
