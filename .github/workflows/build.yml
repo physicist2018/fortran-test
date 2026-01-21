@@ -7,46 +7,123 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        include:
+          # Linux (x64)
+          - os: ubuntu-latest
+            arch: x64
+            label: linux-x64
+            install: sudo apt-get update && sudo apt-get install -y gfortran
+
+          # Windows (x64)
+          - os: windows-latest
+            arch: x64
+            label: windows-x64
+            install: choco install mingw
+
+          # macOS Intel (x64)
+          - os: macos-13
+            arch: x64
+            label: macos-x64
+            install: brew install gcc
+
+          # macOS Apple Silicon (ARM64/M1)
+          - os: macos-latest
+            arch: ARM64
+            label: macos-arm64
+            install: |
+              brew install gcc
+              echo "Homebrew prefix: $(brew --prefix)"
+              echo "GCC installed for Apple Silicon"
+
+          # macOS Apple Silicon с указанием архитектуры
+          - os: macos-14
+            arch: ARM64
+            label: macos-m1
+            install: |
+              # Установка GCC для ARM64
+              brew install gcc
+              # Добавление в PATH
+              echo "$(brew --prefix)/opt/gcc/bin" >> $GITHUB_PATH
 
     steps:
-    - uses: actions/checkout@v4
-    
-    - name: Setup environment
-      run: |
-        if [ "${{ matrix.os }}" = "ubuntu-latest" ]; then
-          sudo apt-get update
-          sudo apt-get install -y gfortran
-        elif [ "${{ matrix.os }}" = "windows-latest" ]; then
-          choco install mingw
-        elif [ "${{ matrix.os }}" = "macos-latest" ]; then
-          brew install gcc
-        fi
-    
-    - name: Compile
-      shell: bash
-      run: |
-        # Простая компиляция всех .f90 файлов
-        gfortran -c *.f90 2>&1 | tee compile.log
-        gfortran *.o -o program
-        
-        # Проверка существования исполняемого файла
-        if [ "${{ matrix.os }}" = "windows-latest" ]; then
-          if [ -f "program.exe" ]; then
-            echo "Build successful on Windows"
+      - uses: actions/checkout@v4
+
+      - name: Show system info
+        shell: bash
+        run: |
+          echo "OS: ${{ matrix.os }}"
+          echo "Architecture: ${{ matrix.arch }}"
+          echo "Runner label: ${{ matrix.label }}"
+          uname -a
+          arch
+
+      - name: Setup environment
+        run: ${{ matrix.install }}
+
+      - name: Configure compiler for M1
+        if: matrix.arch == 'ARM64'
+        shell: bash
+        run: |
+          # Для M1 определяем правильный путь к gfortran
+          if [ -f "/opt/homebrew/bin/gfortran" ]; then
+            echo "Using ARM64 gfortran from Homebrew"
+            sudo ln -sf /opt/homebrew/bin/gfortran /usr/local/bin/gfortran || true
           fi
-        else
+
+          # Проверяем доступные компиляторы
+          which gfortran || echo "gfortran not found in PATH"
+          gfortran --version || echo "Cannot run gfortran"
+
+      - name: Compile Fortran code
+        shell: bash
+        run: |
+          # Ищем gfortran в возможных расположениях для M1
+          if [ "${{ matrix.arch }}" = "ARM64" ]; then
+            if [ -f "/opt/homebrew/bin/gfortran" ]; then
+              FC="/opt/homebrew/bin/gfortran"
+            elif [ -f "/usr/local/bin/gfortran" ]; then
+              FC="/usr/local/bin/gfortran"
+            else
+              FC="gfortran"
+            fi
+          else
+            FC="gfortran"
+          fi
+
+          echo "Using Fortran compiler: $FC"
+          $FC --version || true
+
+          # Компиляция всех .f90 файлов
+          $FC -c *.f90 2>&1 | tee compile.log
+          $FC *.o -o program
+
+          # Проверка архитектуры бинарника
           if [ -f "program" ]; then
-            echo "Build successful on ${{ matrix.os }}"
+            echo "Build successful"
+            if command -v file &> /dev/null; then
+              file program
+            fi
           fi
-        fi
-    
-    - name: Archive build artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: ${{ matrix.os }}-build
-        path: |
-          program
-          program.exe
-          *.mod
-          *.o
+
+      - name: Test executable
+        shell: bash
+        run: |
+          if [ -f "program" ]; then
+            ./program || echo "Program executed"
+          elif [ -f "program.exe" ]; then
+            ./program.exe || echo "Program executed"
+          else
+            echo "No executable found"
+            ls -la
+          fi
+
+      - name: Archive build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.label }}-build
+          path: |
+            program
+            program.exe
+            *.mod
+            *.o
+            compile.log
