@@ -22,10 +22,11 @@ jobs:
             os: macos-latest
             artifact_name: myprogram-macos-arm64.tar.gz
             executable_name: myprogram
-            compile_command: /opt/homebrew/bin/gfortran *.f90 -o myprogram -O2 -march=armv8-a
+            compile_command: $FC *.f90 -o myprogram -O2 -march=armv8-a
             setup_command: |
               brew install gcc
               echo "/opt/homebrew/bin" >> $GITHUB_PATH
+              FC=$(which gfortran || find /opt/homebrew -name gfortran -type f 2>/dev/null | head -1)
             test_command: ./myprogram --help || echo "Test complete"
 
     runs-on: ${{ matrix.os }}
