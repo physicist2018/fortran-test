@@ -59,6 +59,7 @@ jobs:
         run: ${{ matrix.compile_cmd }}
 
       - name: Test
+        shell: bash
         run: |
           if [ -f "myprogram" ]; then
             ./myprogram --help || ./myprogram --version || echo "Program ran"
