@@ -55,6 +55,7 @@ jobs:
           gfortran --version || /opt/homebrew/bin/gfortran --version || /usr/local/bin/gfortran --version || echo "Will try during compile"
 
       - name: Compile
+        shell: bash
         run: ${{ matrix.compile_cmd }}
 
       - name: Test
