@@ -1,4 +1,8 @@
 name: Fortran CI/CD
+# --- ADD THE PERMISSIONS BLOCK HERE ---
+permissions:
+  contents: write
+# --------------------------------------
 
 on:
   push:
@@ -89,10 +93,9 @@ jobs:
           gh release view ${{ github.ref_name }} --repo ${{ github.repository }} 2>/dev/null || echo "Release doesn't exist yet"
 
       - name: Create Release
-        uses: softprops/action-gh-release@v1
+        uses: ncipollo/release-action@v1
         with:
-          tag_name: ${{ github.ref_name }}
+          tag: ${{ github.ref_name }}
           name: Release ${{ github.ref_name }}
-          files: |
-            artifacts/*/*
+          artifacts: artifacts/*
           generate_release_notes: true
